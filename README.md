@@ -1,64 +1,72 @@
-# SJU Public Phone Crawler
+# Public Phone Crawler
 
-A conservative, resumable crawler that inventories publicly displayed US/Canada-style phone numbers on `sju.edu` and discovered `*.sju.edu` pages.
+A conservative, resumable crawler that inventories publicly displayed US/Canada-style phone numbers on any domain you specify.
 
 ## Safety and scope
 
-- Fetches only HTTP(S) URLs whose host is `sju.edu` or ends in `.sju.edu`.
+- Fetches only HTTP(S) URLs whose host matches your `--domain` list (or is inferred from `--seed` URLs).
 - Enforces each origin's live `robots.txt` rules.
 - Fails closed when robots.txt cannot be evaluated unless the operator explicitly supplies `--robots-fail-open`.
 - Uses a minimum one-second per-origin delay by default and honors longer robots crawl delays.
 - Does not authenticate, evade controls, submit forms, call numbers, or infer identities.
-- Public availability does not guarantee accuracy or unrestricted downstream use. Review SJU's current terms and applicable privacy rules before using or sharing results.
+- Public availability does not guarantee accuracy or unrestricted downstream use. Review the target site's terms and applicable privacy rules before using or sharing results.
 
-At review time, `https://www.sju.edu/robots.txt` allowed general crawling but disallowed system, account, internal-search, API, and other paths. The crawler evaluates the live file rather than embedding that snapshot.
+The crawler evaluates the live `robots.txt` rather than embedding a snapshot.
 
 ## Install
 
-Python 3.14 is required.
+Python 3.11+ is required.
 
 ```bash
-cd /home/kame/sju-phone-crawler
-python3.14 -m venv .venv
+git clone https://github.com/usagihermes/sju-phone-crawler
+cd sju-phone-crawler
+python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-## Conservative test run
+Or run directly without installing:
 
 ```bash
-sju-phone-crawler \
+.venv/bin/python sju_phone_crawler.py --help
+```
+
+## Quick start (SJU example)
+
+```bash
+python sju_phone_crawler.py \
+  --domain sju.edu \
+  --seed https://www.sju.edu/ \
+  --seed https://directory.sju.edu/ \
   --fresh \
   --max-pages 10 \
   --delay 1.5 \
   --out-dir sample-results
 ```
 
-## Full or resumed run
+## General usage
 
 ```bash
-sju-phone-crawler --max-pages 25000 --delay 1.0 --out-dir sju_results
-```
-
-Rerun the same command to resume. The SQLite state file defaults to `OUT_DIR/crawl_state.sqlite3`. Use `--fresh` only when you intentionally want to discard prior state.
-
-A custom seed replaces the defaults:
-
-```bash
-sju-phone-crawler \
-  --seed https://www.sju.edu/offices/ \
+python sju_phone_crawler.py \
+  --domain example.com \
+  --seed https://www.example.com/ \
   --max-pages 500 \
-  --delay 1.5 \
-  --out-dir office-results
+  --delay 1.0 \
+  --out-dir example-results
 ```
+
+- `--domain` can be repeated for multiple domains (e.g., `--domain example.com --domain sub.example.com`)
+- If `--domain` is omitted, domains are inferred from `--seed` URLs
+- At least one `--seed` is required
+- Rerun the same command to resume. The SQLite state file defaults to `OUT_DIR/crawl_state.sqlite3`. Use `--fresh` only when you intentionally want to discard prior state.
 
 ## Outputs
 
-- `sju_phone_occurrences.csv` — one row per distinct phone/source/context occurrence
-- `sju_phone_unique.csv` — one row per normalized phone with source aggregation
-- `sju_crawl_errors.csv` — distinct URL-level errors
+- `phone_occurrences.csv` — one row per distinct phone/source/context occurrence
+- `phone_unique.csv` — one row per normalized phone with source aggregation
+- `crawl_errors.csv` — distinct URL-level errors
 - `crawl_state.sqlite3` — resumable queue and durable crawl state
 - `crawl_state.sqlite3.lock` — advisory lock preventing concurrent writers
-- `~/.hermes/logs/sju-phone-crawler.log` — operational log
+- `~/.phone-crawler/logs/phone-crawler.log` — operational log
 
 CSV output uses UTF-8 with BOM for spreadsheet compatibility.
 
@@ -66,6 +74,8 @@ CSV output uses UTF-8 with BOM for spreadsheet compatibility.
 
 | Option | Default | Purpose |
 |---|---:|---|
+| `--domain` | (inferred from seeds) | Allowed domain(s); repeat for multiple |
+| `--seed` | required | Seed URL; repeat as needed |
 | `--max-pages` | 25000 | Total processed URL cap, including prior resumed work |
 | `--delay` | 1.0 | Minimum seconds between requests to the same origin; minimum accepted value is 0.25 |
 | `--timeout` | 20 | Per-request timeout in seconds |
@@ -80,7 +90,6 @@ CSV output uses UTF-8 with BOM for spreadsheet compatibility.
 ## Tests
 
 ```bash
-cd /home/kame/sju-phone-crawler
 .venv/bin/python -m unittest discover -s tests -v
 ```
 

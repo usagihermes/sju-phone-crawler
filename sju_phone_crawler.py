@@ -1,5 +1,5 @@
-#!/usr/bin/env python3.14
-"""Respectful, resumable public phone inventory crawler for sju.edu."""
+#!/usr/bin/env python3
+"""Respectful, resumable public phone inventory crawler for any domain."""
 
 from __future__ import annotations
 
@@ -44,13 +44,12 @@ SKIP_EXTENSIONS = {
 TRACKING_PARAMETERS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "msclkid", "ref", "source",
 }
-DEFAULT_SEEDS = ("https://www.sju.edu/", "https://directory.sju.edu/")
-DEFAULT_USER_AGENT = "SJU-Public-Phone-Inventory/2.0 (public research; respectful crawler)"
+DEFAULT_USER_AGENT = "Public-Phone-Inventory/2.0 (public research; respectful crawler)"
 
 
-def allowed_host(host: str | None) -> bool:
+def allowed_host(host: str | None, allowed_domains: set[str]) -> bool:
     normalized = (host or "").lower().rstrip(".")
-    return normalized == "sju.edu" or normalized.endswith(".sju.edu")
+    return any(normalized == d or normalized.endswith(f".{d}") for d in allowed_domains)
 
 
 def canonicalize(url: str) -> str | None:
@@ -101,7 +100,7 @@ def extract_phones(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def html_text_links(content: bytes, base_url: str) -> tuple[str, list[str]]:
+def html_text_links(content: bytes, base_url: str, allowed_domains: set[str]) -> tuple[str, list[str]]:
     soup = BeautifulSoup(content, "html.parser")
     for tag in soup(["script", "style", "noscript", "template"]):
         tag.decompose()
@@ -116,7 +115,7 @@ def html_text_links(content: bytes, base_url: str) -> tuple[str, list[str]]:
             continue
         joined = urljoin(base_url, raw_href)
         normalized = canonicalize(joined)
-        if normalized and allowed_host(urlsplit(normalized).hostname):
+        if normalized and allowed_host(urlsplit(normalized).hostname, allowed_domains):
             links.add(normalized)
 
     searchable_text = " ".join([visible_text, *tel_values])
@@ -400,7 +399,7 @@ class CrawlStore:
             """
         ).fetchall()
         write_csv(
-            out_dir / "sju_phone_occurrences.csv",
+            out_dir / "phone_occurrences.csv",
             ["phone", "source_url", "source_type", "context"],
             occurrence_rows,
         )
@@ -423,7 +422,7 @@ class CrawlStore:
             for phone, data in sorted(grouped.items())
         ]
         write_csv(
-            out_dir / "sju_phone_unique.csv",
+            out_dir / "phone_unique.csv",
             ["phone", "source_count", "source_types", "source_urls", "sample_context"],
             unique_rows,
         )
@@ -431,7 +430,7 @@ class CrawlStore:
             "SELECT url, error_type, error FROM errors ORDER BY id"
         ).fetchall()
         write_csv(
-            out_dir / "sju_crawl_errors.csv",
+            out_dir / "crawl_errors.csv",
             ["url", "error_type", "error"],
             error_rows,
         )
@@ -503,12 +502,13 @@ def setup_logging(log_file: Path, verbose: bool) -> logging.Logger:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--domain", action="append", help="Allowed domain (e.g., example.com); repeat for multiple")
     parser.add_argument("--seed", action="append", help="Seed URL; repeat as needed")
     parser.add_argument("--max-pages", type=int, default=25000, help="Total terminal URL cap")
     parser.add_argument("--delay", type=float, default=1.0, help="Minimum seconds per host")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--retries", type=int, default=2)
-    parser.add_argument("--out-dir", type=Path, default=Path("sju_results"))
+    parser.add_argument("--out-dir", type=Path, default=Path("crawl_results"))
     parser.add_argument("--state-file", type=Path, help="SQLite state path")
     parser.add_argument("--fresh", action="store_true", help="Discard prior crawl state")
     parser.add_argument("--checkpoint-every", type=int, default=25)
@@ -520,7 +520,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--log-file",
         type=Path,
-        default=Path.home() / ".hermes" / "logs" / "sju-phone-crawler.log",
+        default=Path.home() / ".phone-crawler" / "logs" / "phone-crawler.log",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -552,11 +552,21 @@ def run(args: argparse.Namespace) -> CrawlStore:
     )
     scheduler = RequestScheduler(args.delay)
 
-    seeds = args.seed or list(DEFAULT_SEEDS)
+    allowed_domains = set(args.domain) if args.domain else set()
+    if not allowed_domains:
+        # Extract domains from seeds if not explicitly provided
+        for seed in args.seed or []:
+            parts = urlsplit(seed)
+            if parts.hostname:
+                allowed_domains.add(parts.hostname.lower().rstrip("."))
+
+    seeds = args.seed or []
+    if not seeds:
+        raise ValueError("At least one --seed URL is required")
     for seed in seeds:
         normalized = canonicalize(seed)
-        if not normalized or not allowed_host(urlsplit(normalized).hostname):
-            raise ValueError(f"seed is outside sju.edu or invalid: {seed}")
+        if not normalized or not allowed_host(urlsplit(normalized).hostname, allowed_domains):
+            raise ValueError(f"seed is outside allowed domains or invalid: {seed}")
         store.enqueue(normalized)
 
     completed_at_start = store.processed_count()
@@ -585,8 +595,8 @@ def run(args: argparse.Namespace) -> CrawlStore:
                     stream=True,
                 )
                 final_url = canonicalize(response.url)
-                if not final_url or not allowed_host(urlsplit(final_url).hostname):
-                    store.mark(url, "skipped", final_url=response.url, error="redirect outside sju.edu")
+                if not final_url or not allowed_host(urlsplit(final_url).hostname, allowed_domains):
+                    store.mark(url, "skipped", final_url=response.url, error="redirect outside allowed domains")
                     response.close()
                     continue
                 response.raise_for_status()
@@ -600,7 +610,7 @@ def run(args: argparse.Namespace) -> CrawlStore:
                     links: list[str] = []
                     kind = "PDF"
                 elif "text/html" in content_type or not content_type:
-                    text, links = html_text_links(content, final_url)
+                    text, links = html_text_links(content, final_url, allowed_domains)
                     kind = "HTML"
                 else:
                     store.mark(url, "skipped", final_url=final_url, content_type=content_type)
